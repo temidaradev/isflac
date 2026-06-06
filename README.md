@@ -1,5 +1,7 @@
 # isflac
 
+<img width="939" height="174" alt="image" src="https://github.com/user-attachments/assets/7e4e4b56-3788-4bad-84a2-162de3fe3f4f" />
+
 A small command line tool that checks whether a FLAC file is really lossless or just a lossy file (like an MP3 or AAC) that someone re-wrapped into a FLAC container.
 
 FLAC is a lossless format, but a `.flac` file is only as good as whatever was fed into it. If you take a 320kbps MP3, decode it, and re-encode the result as FLAC, you get a file that looks lossless from the outside (big size, FLAC header, 24bit/48kHz tags) but actually contains lossy audio. The data that the lossy codec threw away is gone for good. These are usually called "transcodes" or "fake FLACs", and they are common on download sites and in shared music libraries.
