@@ -66,10 +66,11 @@ fn is_flac(path: &str) -> anyhow::Result<FlacResult> {
     let mut planner = FftPlanner::<f32>::new();
     let fft = planner.plan_fft_forward(fft_size);
 
-    let step = fft_size / 2;
-    let mut power = vec![0f64; half];
+    let target_frames = 2000;
+    let span = samples.len().saturating_sub(fft_size);
+    let step = (span / target_frames).max(fft_size / 2);
+    let mut magnitudes = vec![0f32; half];
     let mut buffer: Vec<Complex<f32>> = vec![Complex::default(); fft_size];
-    let mut frames = 0u32;
 
     let mut start = 0;
     while start + fft_size <= samples.len() {
@@ -80,17 +81,14 @@ fn is_flac(path: &str) -> anyhow::Result<FlacResult> {
             };
         }
         fft.process(&mut buffer);
-        for (p, c) in power.iter_mut().zip(buffer[..half].iter()) {
-            *p += c.norm_sqr() as f64;
+        for (m, c) in magnitudes.iter_mut().zip(buffer[..half].iter()) {
+            let v = c.norm();
+            if v > *m {
+                *m = v;
+            }
         }
-        frames += 1;
         start += step;
     }
-
-    let magnitudes: Vec<f32> = power
-        .iter()
-        .map(|&p| (p / frames as f64).sqrt() as f32)
-        .collect();
 
     let max_mag = magnitudes.iter().cloned().fold(0f32, f32::max).max(1e-12);
     let bin_hz = sample_rate as f32 / fft_size as f32;
@@ -103,38 +101,37 @@ fn is_flac(path: &str) -> anyhow::Result<FlacResult> {
     let smooth_bins = ((180.0 / bin_hz) as usize).max(1);
     let db_smooth = moving_average(&db, smooth_bins);
 
-    let floor_db = percentile(&db_smooth, 0.05);
+    let noise_floor = percentile(&db_smooth, 0.02);
+    let dead_threshold = noise_floor + 8.0;
 
-    let gap = ((1500.0 / bin_hz) as usize).max(1);
-    let scan_start = ((3000.0 / bin_hz) as usize).min(half);
-    let mut cliff_bin = 0usize;
-    let mut cliff_drop = 0f32;
-    let mut i = scan_start;
-    while i + gap < half {
-        let drop = db_smooth[i] - db_smooth[i + gap];
-        if drop > cliff_drop {
-            cliff_drop = drop;
-            cliff_bin = i;
-        }
-        i += 1;
+    let mut cutoff_bin = half - 1;
+    while cutoff_bin > 0 && db_smooth[cutoff_bin] <= dead_threshold {
+        cutoff_bin -= 1;
     }
 
-    let above_start = (cliff_bin + gap).min(half);
-    let above_avg = if above_start < half {
-        db_smooth[above_start..].iter().sum::<f32>() / (half - above_start) as f32
-    } else {
-        floor_db
-    };
-
-    let content_top = db_smooth
-        .iter()
-        .rposition(|&d| d > floor_db + 10.0)
-        .unwrap_or(half - 1);
-    let cutoff = content_top as f32 * bin_hz / 1000.0;
+    let dead_zone_khz = (half - 1 - cutoff_bin) as f32 * bin_hz / 1000.0;
+    let cutoff = cutoff_bin as f32 * bin_hz / 1000.0;
     let nyquist_khz = nyquist / 1000.0;
     let coverage = cutoff / nyquist_khz;
 
-    let is_brick_wall = cliff_drop >= 15.0 && above_avg <= floor_db + 10.0 && coverage < 0.92;
+    let probe_gap = ((1000.0 / bin_hz) as usize).max(1);
+    let probe = (cutoff_bin + probe_gap).min(half - 1);
+    let edge_drop = db_smooth[cutoff_bin] - db_smooth[probe];
+
+    let is_brick_wall = dead_zone_khz >= 1.5 && coverage < 0.94 && edge_drop >= 12.0;
+
+    if std::env::var("ISFLAC_DEBUG").is_ok() {
+        eprintln!(
+            "noise_floor={:.1} dead_zone={:.1}kHz cutoff={:.1}kHz coverage={:.2} edge_drop={:.1} brick={}",
+            noise_floor, dead_zone_khz, cutoff, coverage, edge_drop, is_brick_wall
+        );
+        for khz in 1..(nyquist as u32 / 1000) {
+            let bin = (khz as f32 * 1000.0 / bin_hz) as usize;
+            if bin < half {
+                eprintln!("{:>3} kHz: {:7.1} dB", khz, db_smooth[bin]);
+            }
+        }
+    }
 
     if is_brick_wall {
         let source = classify_cutoff(cutoff);
