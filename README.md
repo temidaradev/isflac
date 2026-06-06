@@ -19,18 +19,18 @@ isflac measures that cutoff automatically:
 1. Read the first four bytes and confirm they are `fLaC`. If not, it is not a FLAC file at all.
 2. Decode the whole first channel of the file into samples.
 3. Run a Fast Fourier Transform (FFT) over the audio to see how much energy lives at each frequency.
-4. Find the highest frequency that still has real content above the noise floor. That is the cutoff.
-5. Compare the cutoff to the Nyquist frequency. If the audio only covers less than about 85 percent of the available range, it is almost certainly a transcode and isflac warns you.
+4. Look for a brick wall: a steep cliff in the spectrum that drops down to a flat dead zone with nothing above it.
+5. If it finds one well below the Nyquist frequency, the file is almost certainly a transcode and isflac warns you, reporting where the content actually stops.
 
 ### The signal processing details
 
-Getting this measurement right matters, and there are two easy ways to get it wrong:
+Getting this measurement right matters, and there are a few easy ways to get it wrong:
 
 - **Windowing.** Feeding raw samples straight into an FFT causes spectral leakage. Strong low frequency content smears energy into every frequency bin, including the ones above a real cutoff. That makes a transcode look full spectrum and pass as genuine. isflac applies a Hann window to each block before the FFT, which keeps the leakage down so the cutoff stays sharp.
 
 - **Sampling enough of the file.** A single FFT taken from the start of a track is misleading, because intros are often quiet or fade in and have no high frequency content. isflac uses Welch's method instead: it slides a window across the entire file with 50 percent overlap, takes an FFT of each block, and averages all of the power spectra together. Averaging crushes the random noise floor while keeping the steady high frequency content, so the cutoff becomes easy to spot.
 
-The cutoff is then taken as the highest frequency bin whose averaged level is within 50dB of the loudest bin in the file.
+- **Looking for a cliff, not just quiet treble.** This is the important one. In real music the treble is naturally 40 to 60 dB quieter than the bass, so you cannot just measure where the sound drops below some level relative to the loudest part. A genuine file rolls off gradually and keeps a little energy all the way to Nyquist. A transcode instead has a sharp cliff, often 30 to 40 dB over a single kilohertz, followed by a flat dead zone. isflac smooths the averaged spectrum, then scans for the steepest drop and only calls it a transcode when the region above that drop really is flat and sitting at the noise floor.
 
 ## Building
 

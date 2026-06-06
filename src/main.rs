@@ -91,20 +91,51 @@ fn is_flac(path: &str) -> anyhow::Result<FlacResult> {
         .map(|&p| (p / frames as f64).sqrt() as f32)
         .collect();
 
-    let max_mag = magnitudes.iter().cloned().fold(0f32, f32::max);
-    let threshold = max_mag * 10f32.powf(-50.0 / 20.0);
+    let max_mag = magnitudes.iter().cloned().fold(0f32, f32::max).max(1e-12);
+    let bin_hz = sample_rate as f32 / fft_size as f32;
 
-    let last_active_bin = magnitudes
+    let db: Vec<f32> = magnitudes
         .iter()
-        .rposition(|&m| m > threshold)
+        .map(|&m| 20.0 * (m.max(1e-12) / max_mag).log10())
+        .collect();
+
+    let smooth_bins = ((180.0 / bin_hz) as usize).max(1);
+    let db_smooth = moving_average(&db, smooth_bins);
+
+    let floor_db = percentile(&db_smooth, 0.05);
+
+    let gap = ((1500.0 / bin_hz) as usize).max(1);
+    let scan_start = ((3000.0 / bin_hz) as usize).min(half);
+    let mut cliff_bin = 0usize;
+    let mut cliff_drop = 0f32;
+    let mut i = scan_start;
+    while i + gap < half {
+        let drop = db_smooth[i] - db_smooth[i + gap];
+        if drop > cliff_drop {
+            cliff_drop = drop;
+            cliff_bin = i;
+        }
+        i += 1;
+    }
+
+    let above_start = (cliff_bin + gap).min(half);
+    let above_avg = if above_start < half {
+        db_smooth[above_start..].iter().sum::<f32>() / (half - above_start) as f32
+    } else {
+        floor_db
+    };
+
+    let content_top = db_smooth
+        .iter()
+        .rposition(|&d| d > floor_db + 10.0)
         .unwrap_or(half - 1);
-
-    let cutoff = (last_active_bin as f32 / fft_size as f32) * sample_rate as f32 / 1000.0;
+    let cutoff = content_top as f32 * bin_hz / 1000.0;
     let nyquist_khz = nyquist / 1000.0;
-
     let coverage = cutoff / nyquist_khz;
 
-    if coverage < 0.85 {
+    let is_brick_wall = cliff_drop >= 30.0 && above_avg <= floor_db + 15.0 && coverage < 0.92;
+
+    if is_brick_wall {
         let source = classify_cutoff(cutoff);
         return Ok(FlacResult::FakeFlac {
             sample_rate,
@@ -119,6 +150,24 @@ fn is_flac(path: &str) -> anyhow::Result<FlacResult> {
         bit_depth,
         channels,
     })
+}
+
+fn moving_average(data: &[f32], window: usize) -> Vec<f32> {
+    let half = window / 2;
+    (0..data.len())
+        .map(|i| {
+            let lo = i.saturating_sub(half);
+            let hi = (i + half + 1).min(data.len());
+            data[lo..hi].iter().sum::<f32>() / (hi - lo) as f32
+        })
+        .collect()
+}
+
+fn percentile(data: &[f32], p: f32) -> f32 {
+    let mut sorted: Vec<f32> = data.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let idx = ((sorted.len() as f32 - 1.0) * p).round() as usize;
+    sorted[idx]
 }
 
 fn classify_cutoff(khz: f32) -> &'static str {
