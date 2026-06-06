@@ -1,0 +1,9 @@
+[package]
+name = "isflac"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.102"
+claxon = "0.4.3"
+rustfft = "6.4.1"
