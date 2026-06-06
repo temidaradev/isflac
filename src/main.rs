@@ -114,16 +114,19 @@ fn is_flac(path: &str) -> anyhow::Result<FlacResult> {
     let nyquist_khz = nyquist / 1000.0;
     let coverage = cutoff / nyquist_khz;
 
-    let probe_gap = ((1000.0 / bin_hz) as usize).max(1);
-    let probe = (cutoff_bin + probe_gap).min(half - 1);
-    let edge_drop = db_smooth[cutoff_bin] - db_smooth[probe];
+    let content_ref = noise_floor + 20.0;
+    let mut content_bin = cutoff_bin;
+    while content_bin > 0 && db_smooth[content_bin] < content_ref {
+        content_bin -= 1;
+    }
+    let transition_khz = (cutoff_bin - content_bin) as f32 * bin_hz / 1000.0;
 
-    let is_brick_wall = dead_zone_khz >= 1.5 && coverage < 0.94 && edge_drop >= 12.0;
+    let is_brick_wall = dead_zone_khz >= 1.5 && coverage < 0.94 && transition_khz <= 2.5;
 
     if std::env::var("ISFLAC_DEBUG").is_ok() {
         eprintln!(
-            "noise_floor={:.1} dead_zone={:.1}kHz cutoff={:.1}kHz coverage={:.2} edge_drop={:.1} brick={}",
-            noise_floor, dead_zone_khz, cutoff, coverage, edge_drop, is_brick_wall
+            "noise_floor={:.1} dead_zone={:.1}kHz cutoff={:.1}kHz coverage={:.2} transition={:.1}kHz brick={}",
+            noise_floor, dead_zone_khz, cutoff, coverage, transition_khz, is_brick_wall
         );
         for khz in 1..(nyquist as u32 / 1000) {
             let bin = (khz as f32 * 1000.0 / bin_hz) as usize;
