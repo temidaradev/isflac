@@ -30,7 +30,7 @@ Getting this measurement right matters, and there are a few easy ways to get it 
 
 - **Sampling enough of the file.** A single FFT taken from the start of a track is misleading, because intros are often quiet or fade in and have no high frequency content. isflac uses Welch's method instead: it slides a window across the entire file with 50 percent overlap, takes an FFT of each block, and averages all of the power spectra together. Averaging crushes the random noise floor while keeping the steady high frequency content, so the cutoff becomes easy to spot.
 
-- **Looking for a cliff, not just quiet treble.** This is the important one. In real music the treble is naturally 40 to 60 dB quieter than the bass, so you cannot just measure where the sound drops below some level relative to the loudest part. A genuine file rolls off gradually and keeps a little energy all the way to Nyquist. A transcode instead has a sharp cliff, often 30 to 40 dB over a single kilohertz, followed by a flat dead zone. isflac smooths the averaged spectrum, then scans for the steepest drop and only calls it a transcode when the region above that drop really is flat and sitting at the noise floor.
+- **Looking for a cliff, not just quiet treble.** This is the important one. In real music the treble is naturally 40 to 60 dB quieter than the bass, so you cannot just measure where the sound drops below some level relative to the loudest part. A genuine file rolls off gradually and keeps a little energy all the way to Nyquist. A transcode instead has a sharp cliff, dropping tens of decibels over a single kilohertz, followed by a flat dead zone that sits at the noise floor. isflac smooths the averaged spectrum, scans for the steepest drop across a roughly 1.5 kHz span, and only calls it a transcode when that drop is steep, the region above it is flat and parked at the noise floor, and the content stops clearly below Nyquist. A gradual roll-off has none of that, so it stays genuine.
 
 ## Building
 
@@ -46,17 +46,28 @@ If you are using Nix, there is a `flake.nix` in the repo, so `nix build` or `nix
 
 ## Usage
 
+Pass a single file to check it:
+
 ```
 isflac <file.flac>
+```
+
+Or pass a folder to scan every FLAC inside it, including all subfolders:
+
+```
+isflac <folder>
 ```
 
 For example:
 
 ```
 cargo run --release -- /home/you/Music/song.flac
+cargo run --release -- /home/you/Music
 ```
 
 ## What the output means
+
+### A single file
 
 A genuine file prints its real format and exits cleanly:
 
@@ -73,13 +84,28 @@ WARNING: probably transcoded FLAC
   probably MP3 ~320kbps
 ```
 
-Exit codes:
+### A folder
 
-- `0` genuine FLAC
-- `1` not a FLAC file, or an error reading it
-- `2` probably a transcode
+Scanning a folder prints one line per file, then a summary at the end:
 
-That makes it easy to use in scripts, for example to scan a folder and flag the bad files.
+```
+GENUINE  /home/you/Music/real album/track.flac
+FAKE     /home/you/Music/bad rip/song.flac  (20.3 kHz, probably MP3 ~320kbps)
+NOTFLAC  /home/you/Music/weird/file.flac
+ERROR    /home/you/Music/broken.flac  (some error)
+
+scanned 4 files: 1 genuine, 1 transcoded, 2 errors
+```
+
+This is the quickest way to find the bad files in a whole library at once. If a folder turns out to be full of FAKE results that all stop at the same frequency, that is a strong sign the whole set came from the same lossy source.
+
+### Exit codes
+
+- `0` genuine FLAC, or a folder with no transcodes found
+- `1` not a FLAC file, an error reading it, or an empty folder
+- `2` probably a transcode, or a folder where at least one transcode was found
+
+That makes it easy to use in scripts to flag bad files automatically.
 
 ## Limitations
 

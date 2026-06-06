@@ -1,5 +1,6 @@
 use claxon::FlacReader;
 use rustfft::{num_complex::Complex, FftPlanner};
+use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
 pub enum FlacResult {
@@ -133,7 +134,7 @@ fn is_flac(path: &str) -> anyhow::Result<FlacResult> {
     let nyquist_khz = nyquist / 1000.0;
     let coverage = cutoff / nyquist_khz;
 
-    let is_brick_wall = cliff_drop >= 30.0 && above_avg <= floor_db + 15.0 && coverage < 0.92;
+    let is_brick_wall = cliff_drop >= 15.0 && above_avg <= floor_db + 10.0 && coverage < 0.92;
 
     if is_brick_wall {
         let source = classify_cutoff(cutoff);
@@ -181,12 +182,29 @@ fn classify_cutoff(khz: f32) -> &'static str {
     }
 }
 
-fn main() {
-    let path = std::env::args().nth(1).expect("usage: isflac <file.flac>");
-    match is_flac(&path) {
+fn collect_flacs(dir: &Path, out: &mut Vec<PathBuf>) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                collect_flacs(&p, out);
+            } else if p
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case("flac"))
+                .unwrap_or(false)
+            {
+                out.push(p);
+            }
+        }
+    }
+}
+
+fn scan_one(path: &str) -> i32 {
+    match is_flac(path) {
         Ok(FlacResult::NotFlac) => {
             eprintln!("not a FLAC file (bad magic bytes)");
-            std::process::exit(1);
+            1
         }
         Ok(FlacResult::TrueFlac {
             sample_rate,
@@ -197,6 +215,7 @@ fn main() {
                 "genuine FLAC — {}Hz / {}bit / {}ch",
                 sample_rate, bit_depth, channels
             );
+            0
         }
         Ok(FlacResult::FakeFlac {
             sample_rate,
@@ -208,11 +227,69 @@ fn main() {
                 "WARNING: probably transcoded FLAC\n  header says: {}Hz / {}bit\n  actual content cutoff: {:.1} kHz\n  {}",
                 sample_rate, bit_depth, cutoff, source
             );
-            std::process::exit(2);
+            2
         }
         Err(e) => {
             eprintln!("error: {}", e);
-            std::process::exit(1);
+            1
         }
     }
+}
+
+fn scan_folder(dir: &Path) -> i32 {
+    let mut files = Vec::new();
+    collect_flacs(dir, &mut files);
+    files.sort();
+
+    if files.is_empty() {
+        eprintln!("no FLAC files found in {}", dir.display());
+        return 1;
+    }
+
+    let (mut genuine, mut fake, mut errors) = (0, 0, 0);
+
+    for file in &files {
+        let name = file.display();
+        match is_flac(&file.to_string_lossy()) {
+            Ok(FlacResult::TrueFlac { .. }) => {
+                println!("GENUINE  {}", name);
+                genuine += 1;
+            }
+            Ok(FlacResult::NotFlac) => {
+                println!("NOTFLAC  {}", name);
+                errors += 1;
+            }
+            Ok(FlacResult::FakeFlac { cutoff, source, .. }) => {
+                println!("FAKE     {}  ({:.1} kHz, {})", name, cutoff, source);
+                fake += 1;
+            }
+            Err(e) => {
+                println!("ERROR    {}  ({})", name, e);
+                errors += 1;
+            }
+        }
+    }
+
+    println!(
+        "\nscanned {} files: {} genuine, {} transcoded, {} errors",
+        files.len(),
+        genuine,
+        fake,
+        errors
+    );
+
+    if fake > 0 { 2 } else { 0 }
+}
+
+fn main() {
+    let path = std::env::args()
+        .nth(1)
+        .expect("usage: isflac <file.flac | folder>");
+    let p = Path::new(&path);
+    let code = if p.is_dir() {
+        scan_folder(p)
+    } else {
+        scan_one(&path)
+    };
+    std::process::exit(code);
 }
